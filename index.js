@@ -74,8 +74,10 @@ async function onMessageReceived() {
     const msg = ctx.chat[idx];
     if (!msg || msg.is_user) return;
 
-    // Strip PHONE blocks before scanning — smart-phone's slot mechanism handles
-    // <pic> tags inside <PHONE>; processing them here causes double-generation.
+    // If smart-phone is active and the message contains a PHONE block, let smart-phone
+    // handle all rendering — skip ST bubble image generation entirely.
+    if (window.smartPhone && /<PHONE>/i.test(msg.mes || '')) return;
+
     const mesOutsidePhone = (msg.mes || '').replace(/<PHONE>[\s\S]*?<\/PHONE>/gi, '');
     const picMatches = [...mesOutsidePhone.matchAll(PIC_RE)];
     if (!picMatches.length) return;
@@ -101,7 +103,10 @@ async function onMessageReceived() {
         try {
             const contact = resolveContact(tag, contacts, { context: msg.mes });
             const anchor = getAnchorBundle(contact);
-            const useFullAnchor = anchor.locked && anchor.sdPrompt && intent.level !== 'explicit';
+            // Use full SD anchor whenever locked + has sdPrompt (NSFW path included).
+        // Safety relies on Fix 4 — sdPrompt template no longer carries scene/composition/style
+        // tokens, so NSFW intent tags (nude, spread legs, etc.) won't conflict with the base.
+        const useFullAnchor = anchor.locked && !!anchor.sdPrompt;
 
             const built = buildPrompt({
                 aiPrompt,
@@ -167,7 +172,21 @@ window.smartImageGen = {
 
         const ctx = getContext();
         const userText = findLastUserMessage(ctx.chat)?.mes || '';
-        const intent = classifyMessage(userText);
+        const postText = hint.context || '';
+        const userIntent = classifyMessage(userText);
+        const postIntent = postText ? classifyMessage(postText) : { level: 'sfw', tags: [] };
+        const LEVELS = ['sfw', 'suggestive', 'explicit'];
+        let intent = {
+            level: LEVELS[Math.max(LEVELS.indexOf(userIntent.level), LEVELS.indexOf(postIntent.level))],
+            tags: [...new Set([...userIntent.tags, ...postIntent.tags])],
+        };
+
+        // ⚠️ TODO: 朋友圈暂时强制 SFW。后续支持 NSFW 朋友圈时，**移除下面这个 if 块即可**。
+        // 设计原因：朋友圈是熟人/社交场景，AI 容易在帖子文本里写带性暗示词（"翘臀/暧昧"），
+        // 但用户当前不想朋友圈生成 NSFW 图。其它入口（SMS/XHS/论坛）保留 NSFW 能力。
+        if (hint.source === 'moments') {
+            intent = { level: 'sfw', tags: [] };
+        }
 
         const contact = resolveContact(picTag, contacts, hint);
         const anchor = getAnchorBundle(contact);
@@ -176,7 +195,10 @@ window.smartImageGen = {
         const baseUrl = window.smartPhone?.getComfyuiUrl?.() || extension_settings[EXT].comfyuiUrl;
         const bridge = new ComfyUIBridge({ baseUrl });
 
-        const useFullAnchor = anchor.locked && anchor.sdPrompt && intent.level !== 'explicit';
+        // Use full SD anchor whenever locked + has sdPrompt (NSFW path included).
+        // Safety relies on Fix 4 — sdPrompt template no longer carries scene/composition/style
+        // tokens, so NSFW intent tags (nude, spread legs, etc.) won't conflict with the base.
+        const useFullAnchor = anchor.locked && !!anchor.sdPrompt;
         const built = buildPrompt({
             aiPrompt,
             characterAnchor: anchor.prompt,
@@ -186,6 +208,8 @@ window.smartImageGen = {
             model,
         });
 
+        // On reroll: ignore locked seed so user gets a different image. Otherwise reuse anchor.seed for consistency.
+        const useLockedSeed = anchor.locked && !hint.reroll;
         const { imageUrl } = await bridge.generate({
             model,
             positive: built.positive,
@@ -196,7 +220,7 @@ window.smartImageGen = {
             cfg: built.cfg,
             sampler: built.sampler,
             scheduler: built.scheduler,
-            seed: anchor.locked ? anchor.seed : null,
+            seed: useLockedSeed ? anchor.seed : null,
             denoise: 1.0,
         });
         return imageUrl;
