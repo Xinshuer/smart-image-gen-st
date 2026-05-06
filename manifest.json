@@ -1,0 +1,12 @@
+{
+    "display_name": "Smart Image Gen",
+    "loading_order": 6,
+    "requires": [],
+    "optional": ["smart-phone-st"],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Xinshuer",
+    "version": "0.4.0",
+    "homePage": "https://github.com/Xinshuer/smart-image-gen-st",
+    "auto_update": true
+}
