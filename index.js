@@ -74,8 +74,10 @@ async function onMessageReceived() {
     const msg = ctx.chat[idx];
     if (!msg || msg.is_user) return;
 
-    // Strip PHONE blocks before scanning — smart-phone's slot mechanism handles
-    // <pic> tags inside <PHONE>; processing them here causes double-generation.
+    // If smart-phone is active and the message contains a PHONE block, let smart-phone
+    // handle all rendering — skip ST bubble image generation entirely.
+    if (window.smartPhone && /<PHONE>/i.test(msg.mes || '')) return;
+
     const mesOutsidePhone = (msg.mes || '').replace(/<PHONE>[\s\S]*?<\/PHONE>/gi, '');
     const picMatches = [...mesOutsidePhone.matchAll(PIC_RE)];
     if (!picMatches.length) return;
