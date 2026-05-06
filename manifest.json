@@ -2,7 +2,7 @@
     "display_name": "Smart Image Gen",
     "loading_order": 6,
     "requires": [],
-    "optional": ["smart-phone-st"],
+    "optional": ["smart-phone"],
     "js": "index.js",
     "css": "style.css",
     "author": "Xinshuer",

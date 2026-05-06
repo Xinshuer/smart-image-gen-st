@@ -1,73 +1,89 @@
-# Smart Image Gen — SillyTavern 扩展
+# Smart Image Gen (酒馆扩展)
 
-NSFW 感知 ComfyUI 直连生图扩展。中文意图分类 → 英文 booru tag 自动映射，支持 Pony Realism / NoobAI vPred / majicMIX 三模型路由，配合 [smart-phone-st](https://github.com/Xinshuer/smart-phone-st) 可实现角色一致性参考图工作流。
+NSFW 感知 + 角色一致性的 ComfyUI 直连生图扩展。配合 [smart-phone](../smart-phone) 使用最佳，但单独装也能工作。
 
-## 功能亮点
+## 解决的核心痛点
 
-- **ComfyUI 直连** — POST `/prompt` + 轮询 `/history` + 取 `/view`，三个工作流模板内联代码（无需外部 json 文件）
-- **三模型路由**：
-  - **Pony Realism**（832×1216, cfg 6.5, dpmpp_2m_sde+karras）— 欧美写实/默认
-  - **NoobAI vPred**（832×1216, cfg 7.0, euler+normal）— 动漫/暗调，含 RescaleCFG (0.7) + LoRA strength 0.5
-  - **majicMIX v7**（768×1152, cfg 7.0, euler_ancestral+karras）— 亚洲写真
-- **中文 NSFW 词典** — "奶子/小穴/掏出/脱光" 自动映射到 `topless / pussy / breasts out / nude` 等 booru tag
-- **SFW 守门** — 用户没显式触发 NSFW 时自动剥离 AI 偷塞的裸露词，防止意外裸露
-- **角色锁定** — 配合 smart-phone-st 时，参考图与聊天图复用同一 seed + sdPrompt，跨消息保持外貌一致
+> 用户:「给我看看你的小穴」
+> 普通生图扩展:生成一张穿衣全身照 ❌
+> Smart Image Gen:识别出 NSFW 意图 → 自动加 `pussy, spread legs, close-up` 等关键 tag → 生成正确画面 ✅
+
+## 三大能力
+
+### 1. NSFW 意图识别（[lib/nsfw-classifier.js](./lib/nsfw-classifier.js)）
+
+扫描**最近一条用户消息**，按词典匹配输出 `{ level, tags }`：
+
+| Level | 触发词示例 | 后果 |
+|---|---|---|
+| `sfw` | (默认) | 模型走标准 SFW 模式 |
+| `suggestive` | 害羞 / 比基尼 / 大腿 / 锁骨 / 撩 | 加暗示性 tag，仍走 SFW 设定 |
+| `explicit` | 小穴 / 自慰 / 内射 / 张开腿 / 裸 / 内裤 / 黑丝 | 走 NSFW 模式：模型 prompt 加显式 tag、负面去掉 nsfw、Pony 加 rating_explicit 前缀 |
+
+视角/场景词也会自动追加到 tag：「自拍」→ `selfie`，「床上」→ `on bed, bedroom`，「特写」→ `close-up`，「镜子」→ `mirror selfie` 等。
+
+### 2. 模型差异化 prompt 构造（[lib/prompt-builder.js](./lib/prompt-builder.js)）
+
+按所选模型用对的 prefix / negative / 技术参数：
+
+| 模型 | Prefix | 默认 NSFW 翻转 | CFG | Sampler | 尺寸 |
+|---|---|---|---|---|---|
+| **Pony Realism** | `score_9, score_8_up, score_7_up, photo, amateur, film grain` | NSFW 时加 `rating_explicit` | 6.5 | dpmpp_2m_sde + karras | 832×1216 |
+| **NoobAI vPred** | `masterpiece, best quality, newest, absurdres, highres, real photo, photorealistic, ...` | **正面 +`nsfw`/`safe`、负面对称翻转**（NoobAI 强制） | 4.5 | euler + normal | 832×1216 |
+| **majicMIX v7** | `Best quality, masterpiece, ultra high res, (photorealistic:1.4)` | — | 7.0 | euler_ancestral + karras | 768×1152 |
+
+prompt 拼接顺序：`prefix + 角色锚点 + 意图 tag + AI 写的 prompt`，让用户的特写需求和角色外貌都不会被覆盖。
+
+### 3. 角色一致性（[lib/character-anchor.js](./lib/character-anchor.js)）
+
+从 smart-phone 读联系人：
+- **未锁定** → seed 随机，外貌锚点 prompt 仍并入,保持基本五官/发色一致
+- **已锁定** → seed 固定 + 锚点 prompt → 同一角色多次生图肉眼难分辨
 
 ## 安装
 
-### ST 扩展菜单一键装（推荐）
-
-1. SillyTavern 扩展菜单 → 安装扩展（URL）
-2. 填入：`https://github.com/Xinshuer/smart-image-gen-st`
-3. 重启酒馆，扩展菜单里勾选启用
-
-### 手动安装
-
-```bash
-cd SillyTavern/data/default-user/extensions/
-git clone https://github.com/Xinshuer/smart-image-gen-st.git
-```
+放到 `SillyTavern/public/scripts/extensions/third-party/smart-image-gen/`，刷新酒馆。
 
 ## 配置
 
-ComfyUI 启动时必须加 CORS 头，否则浏览器会拦：
+扩展菜单点 **Smart Image Gen** 切换启用状态。具体的 ComfyUI URL / 模型选择在 **smart-phone 的设置面板**里改（两个扩展共享配置）。
 
-```bat
-python main.py --enable-cors-header *
+如果不装 smart-phone，会用 `extension_settings.smart-image-gen` 的默认值（127.0.0.1:8188 / pony）。
+
+## ComfyUI 同源问题
+
+浏览器同源策略要求 ComfyUI 允许跨域。启动 ComfyUI 时加：
+
+```bash
+python main.py --enable-cors-header '*'
 ```
 
-ComfyUI 地址默认 `http://127.0.0.1:8188`，可在 smart-phone 设置页修改。
+或把 ComfyUI 放在和酒馆同 host 的反向代理后。
 
-## 模型要求
+## 工作流来源
 
-需要在 ComfyUI 安装：
-- **Pony Realism** 模型 + 对应 VAE
-- **NoobAI vPred** 模型 + 对应 LoRA（可选）
-- **majicMIX v7** 模型
+3 个工作流模板已**内联**在 [lib/workflows.js](./lib/workflows.js)，与 `g:/本地部署/comfyUI生图工作流-*.txt` 一致。修改这个文件即可改 LoRA / 节点 / 默认参数。
 
-模型不全也能用，只要选用已安装的那个即可。
+## 公开 API
 
-## 与 smart-phone-st 的协作
+```js
+// 生成单张图（用于 phone 内联）
+const url = await window.smartImageGen.generateFromPicTag(
+    '<pic prompt="1girl, smile">',
+    { contacts: [...], hint: { from: '金琳' } }
+);
 
-- smart-phone-st 解析 AI 输出的 `<pic prompt="...">` 标签
-- 通过 `window.smartImageGen.generateFromPicTag(picTag, { contacts, hint })` 调用本扩展
-- 本扩展返回 imageUrl，smart-phone 把它插入手机 UI
+// 生成参考图（用于角色锁定）
+const { imageUrl, seed } = await window.smartImageGen.generateReferenceImage({
+    characterName: '金琳',
+    anchorPrompt: 'asian, long black hair, brown eyes, large breasts',
+});
 
-也能独立使用：本扩展会监听所有 AI 消息中的 `<pic prompt="...">` 标签自动生图（当 smart-phone 没启用时）。
+// 仅做意图分类（手动用）
+const { level, tags } = window.smartImageGen.classifyIntent('给我看看你的小穴');
+// → { level: 'explicit', tags: ['pussy', 'spread pussy', 'close-up'] }
+```
 
-## 触发 NSFW
+## 调试
 
-用户消息含以下词时切到 explicit 模式（生成裸露/性描写图像）：
-
-- 阴部：小穴 / 阴道 / 阴蒂 / 肉穴 / 蜜穴 / 骚穴 / 屄 ...
-- 胸部：奶子 / 咪咪 / 乳头 / 乳晕（→ topless / nipples）
-- 肛部：屁眼 / 屁穴 / 菊穴 / 肛门 ...
-- 阳具：屌 / 鸡巴 / 阴茎 / 肉棒 / 男根 / 巨根 ...
-- 行为：做爱 / 操 / 内射 / 自慰 / 高潮 / 潮吹 ...
-- 暴露：脱光 / 全裸 / 裸体 / 掏出 / 露胸 / 撩起 / 解开 ...
-
-完整词典见 `lib/nsfw-classifier.js`。
-
-## 许可
-
-MIT
+控制台搜 `[smart-image-gen]` 看日志。toastr 弹窗会提示意图等级和失败原因。
