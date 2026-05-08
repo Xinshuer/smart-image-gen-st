@@ -82,9 +82,9 @@ async function onMessageReceived() {
     const picMatches = [...mesOutsidePhone.matchAll(PIC_RE)];
     if (!picMatches.length) return;
 
-    // Pull the last user message for intent classification
-    const lastUser = findLastUserMessage(ctx.chat);
-    const userText = lastUser?.mes || '';
+    // v0.8.3: scan recent 3 user messages instead of just last one — covers compound NSFW scenes
+    // where character count / scene / fluids hints span across multiple turns.
+    const userText = getRecentUserContext(ctx.chat, 3);
     const intent = classifyMessage(userText);
 
     if (intent.level === 'explicit') {
@@ -155,6 +155,18 @@ function findLastUserMessage(chat) {
     return null;
 }
 
+// v0.8.3: 取最近 n 条用户消息拼起来，用于 NSFW 复合场景识别。
+// 复杂 NSFW 场景常跨多条 user msg："让妈妈姐姐一起来"在第 1 条，"开始吧"在第 3 条 ——
+// 单消息扫不到 2girls 维度，多消息上下文能补救。
+function getRecentUserContext(chat, n = 3) {
+    if (!Array.isArray(chat)) return '';
+    const collected = [];
+    for (let i = chat.length - 1; i >= 0 && collected.length < n; i--) {
+        if (chat[i].is_user) collected.push(chat[i].mes || '');
+    }
+    return collected.reverse().join('\n');
+}
+
 function escapeAttr(s) {
     return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -171,7 +183,8 @@ window.smartImageGen = {
         const aiPrompt = m[1];
 
         const ctx = getContext();
-        const userText = findLastUserMessage(ctx.chat)?.mes || '';
+        // v0.8.3: 多消息上下文识别（最近 3 条用户消息）
+        const userText = getRecentUserContext(ctx.chat, 3);
         const postText = hint.context || '';
         const userIntent = classifyMessage(userText);
         const postIntent = postText ? classifyMessage(postText) : { level: 'sfw', tags: [] };
