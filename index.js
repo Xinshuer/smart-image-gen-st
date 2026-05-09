@@ -16,7 +16,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 import { eventSource, event_types, saveSettingsDebounced, updateMessageBlock } from '../../../../script.js';
 
 import { classifyMessage, isNSFW } from './lib/nsfw-classifier.js';
-import { buildPrompt, buildReferencePrompt, buildReferencePromptFull } from './lib/prompt-builder.js';
+import { buildPrompt, buildReferencePrompt, buildReferencePromptFull, buildGroupPrompt, extractCoreAppearance } from './lib/prompt-builder.js';
 import { resolveContact, getAnchorBundle } from './lib/character-anchor.js';
 import { ComfyUIBridge } from './lib/comfyui-bridge.js';
 
@@ -234,6 +234,80 @@ window.smartImageGen = {
             sampler: built.sampler,
             scheduler: built.scheduler,
             seed: useLockedSeed ? anchor.seed : null,
+            denoise: 1.0,
+        });
+        return imageUrl;
+    },
+
+    /**
+     * v0.14.0 多角色合影 API — 群聊模式 ② / ⑤ 用
+     * @param picTag 含 prompt="..." 的 pic 标签
+     * @param subjects 成员名字数组（已由协议层 SUBJECTS 属性传入）
+     * @param contacts 全部联系人（用于解析每人 anchor）
+     * @param hint context / source / reroll
+     */
+    async generateGroupPicTag(picTag, { subjects = [], contacts = [], hint = {} } = {}) {
+        const m = picTag.match(/<pic[^>]*\sprompt="([^"]*)"/);
+        if (!m) throw new Error('Invalid pic tag');
+        const aiPrompt = m[1];
+
+        // 对每个 subject 解析 anchor + 抽核心 5-7 tag
+        // 跳过没 anchor 的成员（应在 UI 层已被 disabled，但兜底）
+        const memberCoreList = subjects
+            .map((name) => {
+                const c = contacts.find(x => x.name === name)
+                    || contacts.find(x => x.name && (x.name.includes(name) || name.includes(x.name)));
+                if (!c) return null;
+                const sd = c.anchor?.sdPrompt || c.anchor?.prompt || '';
+                const core = extractCoreAppearance(sd);
+                if (!core) return null;
+                return { name: c.name, core };
+            })
+            .filter(Boolean);
+
+        if (memberCoreList.length === 0) {
+            throw new Error('多角色合影：所有成员都没解析到外貌锚点');
+        }
+
+        // intent 从最近 user 消息识别（同 generateFromPicTag）
+        const ctx = getContext();
+        const userText = getRecentUserContext(ctx.chat, 3);
+        const userIntent = classifyMessage(userText);
+        const postIntent = hint.context ? classifyMessage(hint.context) : { level: 'sfw', tags: [] };
+        const LEVELS = ['sfw', 'suggestive', 'explicit'];
+        const intent = {
+            level: LEVELS[Math.max(LEVELS.indexOf(userIntent.level), LEVELS.indexOf(postIntent.level))],
+            tags: [...new Set([...userIntent.tags, ...postIntent.tags])],
+        };
+
+        const model = window.smartPhone?.getCurrentModel?.() || extension_settings[EXT].fallbackModel;
+        const baseUrl = window.smartPhone?.getComfyuiUrl?.() || extension_settings[EXT].comfyuiUrl;
+        const bridge = new ComfyUIBridge({ baseUrl });
+
+        // 性别推测：从所有 member core 里看 1boy/1girl 比例
+        // 简化版：默认 all_female (后续可由 anchor 标志位指定)
+        const genderHint = 'all_female';
+
+        const built = buildGroupPrompt({
+            aiPrompt,
+            memberCoreList,
+            intent,
+            model,
+            genderHint,
+        });
+
+        // 多角色不锁 seed（每次都重生成）
+        const { imageUrl } = await bridge.generate({
+            model,
+            positive: built.positive,
+            negative: built.negative,
+            width: built.width,
+            height: built.height,
+            steps: built.steps,
+            cfg: built.cfg,
+            sampler: built.sampler,
+            scheduler: built.scheduler,
+            seed: null,
             denoise: 1.0,
         });
         return imageUrl;
