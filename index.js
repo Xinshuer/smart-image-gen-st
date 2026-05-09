@@ -16,7 +16,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 import { eventSource, event_types, saveSettingsDebounced, updateMessageBlock } from '../../../../script.js';
 
 import { classifyMessage, isNSFW } from './lib/nsfw-classifier.js';
-import { buildPrompt, buildReferencePrompt, buildReferencePromptFull, buildGroupPrompt, extractCoreAppearance } from './lib/prompt-builder.js';
+import { buildPrompt, buildReferencePrompt, buildReferencePromptFull, buildGroupPrompt, extractCoreAppearance, detectStrangerKind, extractStrangerCore } from './lib/prompt-builder.js';
 import { resolveContact, getAnchorBundle } from './lib/character-anchor.js';
 import { ComfyUIBridge } from './lib/comfyui-bridge.js';
 
@@ -202,6 +202,31 @@ window.smartImageGen = {
         }
 
         const contact = resolveContact(picTag, contacts, hint);
+
+        // v0.10.0 陌生人路径 — contact==null 且 hint.from 有效时触发
+        // 首次出现 → detectStrangerKind + extractStrangerCore + 缓存
+        // 再次出现 → 复用 cached core 注入 characterAnchor 路径保持视觉一致
+        let strangerCore = '';
+        if (!contact && hint.from && window.smartPhone?.getStrangerAnchor) {
+            const ctx2 = getContext();
+            const chatId2 = ctx2.chatId || 'default';
+            const existing = window.smartPhone.getStrangerAnchor(chatId2, hint.from);
+            if (existing && existing.core) {
+                strangerCore = existing.core;
+                window.smartPhone.incrementStrangerAppearCount?.(chatId2, hint.from);
+            } else {
+                // 首次：识别 kind + 抽取 core + 缓存
+                const kind = detectStrangerKind(aiPrompt, hint);
+                const core = extractStrangerCore(aiPrompt, kind);
+                if (core) {
+                    window.smartPhone.saveStrangerAnchor?.(chatId2, hint.from, {
+                        kind, core, picTagSource: aiPrompt,
+                    });
+                    strangerCore = core;
+                }
+            }
+        }
+
         const anchor = getAnchorBundle(contact);
 
         const model = window.smartPhone?.getCurrentModel?.() || extension_settings[EXT].fallbackModel;
@@ -212,9 +237,12 @@ window.smartImageGen = {
         // Safety relies on Fix 4 — sdPrompt template no longer carries scene/composition/style
         // tokens, so NSFW intent tags (nude, spread legs, etc.) won't conflict with the base.
         const useFullAnchor = anchor.locked && !!anchor.sdPrompt;
+        // v0.10.0 陌生人 core 走 characterAnchor 路径（已有加权处理，不双重加权）
+        // 无 contact 但有 strangerCore 时用 stranger.core 替代 anchor.prompt
+        const effectiveAnchor = anchor.prompt || strangerCore;
         const built = buildPrompt({
             aiPrompt,
-            characterAnchor: anchor.prompt,
+            characterAnchor: effectiveAnchor,
             // SFW locked → full SD prompt; NSFW locked → appearance only
             characterFullPrompt: useFullAnchor ? anchor.sdPrompt : '',
             intent,
@@ -255,13 +283,22 @@ window.smartImageGen = {
         // 跳过没 anchor 的成员（应在 UI 层已被 disabled，但兜底）
         const memberCoreList = subjects
             .map((name) => {
+                // 优先从 contacts 找
                 const c = contacts.find(x => x.name === name)
                     || contacts.find(x => x.name && (x.name.includes(name) || name.includes(x.name)));
-                if (!c) return null;
-                const sd = c.anchor?.sdPrompt || c.anchor?.prompt || '';
-                const core = extractCoreAppearance(sd);
-                if (!core) return null;
-                return { name: c.name, core };
+                if (c) {
+                    const sd = c.anchor?.sdPrompt || c.anchor?.prompt || '';
+                    const core = extractCoreAppearance(sd);
+                    if (core) return { name: c.name, core };
+                }
+                // v0.10.0 fallback: contact 找不到 → 查 strangerAnchors（合影含临时 NPC）
+                if (window.smartPhone?.getStrangerAnchor) {
+                    const ctxLocal = getContext();
+                    const chatId2 = ctxLocal.chatId || 'default';
+                    const sa = window.smartPhone.getStrangerAnchor(chatId2, name);
+                    if (sa?.core) return { name, core: sa.core };
+                }
+                return null;
             })
             .filter(Boolean);
 
