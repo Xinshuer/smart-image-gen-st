@@ -130,6 +130,8 @@ async function onMessageReceived() {
                 scheduler: built.scheduler,
                 seed: anchor.locked ? anchor.seed : null,
                 denoise: 1.0,
+                // v0.11.16 本地组织：散文 pic tag 路径 → worldbook/character/inline/
+                pathContext: { worldbookName: contact?.bookName, characterName: contact?.name, category: 'inline' },
             });
 
             // Replace tag with <img>
@@ -251,6 +253,11 @@ window.smartImageGen = {
 
         // On reroll: ignore locked seed so user gets a different image. Otherwise reuse anchor.seed for consistency.
         const useLockedSeed = anchor.locked && !hint.reroll;
+        // v0.11.16 本地组织：按 source 分目录 sms/group/moments/forum/xhs
+        // 联系人来源用 contact.bookName；陌生人无 worldbook → 'strangers'
+        const _categoryFromSource = ({ sms: 'sms', group: 'group', moments: 'moments', forum: 'forum', xhs: 'xhs' })[hint.source] || 'misc';
+        const _worldbook = contact?.bookName || (strangerCore ? 'strangers' : '');
+        const _charName = contact?.name || hint.from || '';
         const { imageUrl } = await bridge.generate({
             model,
             positive: built.positive,
@@ -263,6 +270,7 @@ window.smartImageGen = {
             scheduler: built.scheduler,
             seed: useLockedSeed ? anchor.seed : null,
             denoise: 1.0,
+            pathContext: { worldbookName: _worldbook, characterName: _charName, category: _categoryFromSource },
         });
         return imageUrl;
     },
@@ -334,6 +342,11 @@ window.smartImageGen = {
         });
 
         // 多角色不锁 seed（每次都重生成）
+        // v0.11.16 本地组织：群体合影 → 用第 1 个成员的 contact.bookName 作 worldbook 目录
+        const _firstMember = subjects[0] || 'group';
+        const _firstContact = contacts.find(c => c.name === _firstMember)
+            || contacts.find(c => c.name && (c.name.includes(_firstMember) || _firstMember.includes(c.name)));
+        const _worldbookGrp = _firstContact?.bookName || '';
         const { imageUrl } = await bridge.generate({
             model,
             positive: built.positive,
@@ -346,6 +359,7 @@ window.smartImageGen = {
             scheduler: built.scheduler,
             seed: null,
             denoise: 1.0,
+            pathContext: { worldbookName: _worldbookGrp, characterName: subjects.join('+').slice(0, 60), category: 'group_photo' },
         });
         return imageUrl;
     },
@@ -362,6 +376,9 @@ window.smartImageGen = {
             ? buildReferencePromptFull({ sdPrompt: anchorSdPrompt, model })
             : buildReferencePrompt({ characterAnchor: anchorPrompt, model });
 
+        // v0.11.16 本地组织：ref 图归 worldbook/character/ref/。worldbook 从 smart-phone 联系人拿
+        const _contact = window.smartPhone?.findContact?.(characterName);
+        const _worldbookRef = _contact?.bookName || '';
         const { imageUrl, seed } = await bridge.generate({
             model,
             positive: built.positive,
@@ -374,6 +391,7 @@ window.smartImageGen = {
             scheduler: built.scheduler,
             seed: existingSeed,
             denoise: 1.0,
+            pathContext: { worldbookName: _worldbookRef, characterName, category: 'ref' },
         });
         return { imageUrl, seed };
     },
