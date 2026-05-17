@@ -255,8 +255,18 @@ window.smartImageGen = {
         const useLockedSeed = anchor.locked && !hint.reroll;
         // v0.11.16 本地组织：按 source 分目录 sms/group/moments/forum/xhs
         // 联系人来源用 contact.bookName；陌生人无 worldbook → 'strangers'
+        // v0.11.17: 陌生人优先从 strangerAnchor.worldbook 读（来自 NPC_PROFILE 的 WORLDBOOK 属性）
+        //          这样升级前后路径一致（不需要"搬家"），新 NPC 图直接存到对应世界书目录
         const _categoryFromSource = ({ sms: 'sms', group: 'group', moments: 'moments', forum: 'forum', xhs: 'xhs' })[hint.source] || 'misc';
-        const _worldbook = contact?.bookName || (strangerCore ? 'strangers' : '');
+        let _worldbook = contact?.bookName || '';
+        if (!_worldbook && hint.from) {
+            // 尝试从 strangerAnchor 拿 worldbook（v0.14.42 NPC_PROFILE 存的）
+            const ctxLocal2 = getContext();
+            const chatId3 = ctxLocal2.chatId || 'default';
+            const sa = window.smartPhone?.getStrangerAnchor?.(chatId3, hint.from);
+            if (sa?.worldbook) _worldbook = sa.worldbook;
+        }
+        if (!_worldbook && strangerCore) _worldbook = 'strangers'; // 兜底
         const _charName = contact?.name || hint.from || '';
         const { imageUrl } = await bridge.generate({
             model,
