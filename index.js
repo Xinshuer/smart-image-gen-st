@@ -19,6 +19,7 @@ import { classifyMessage, isNSFW } from './lib/nsfw-classifier.js';
 import { buildPrompt, buildReferencePrompt, buildReferencePromptFull, buildGroupPrompt, extractCoreAppearance, detectStrangerKind, extractStrangerCore } from './lib/prompt-builder.js';
 import { resolveContact, getAnchorBundle } from './lib/character-anchor.js';
 import { ComfyUIBridge } from './lib/comfyui-bridge.js';
+import { isDMD2Model } from './lib/lora-matcher.js';
 
 const EXT = 'smart-image-gen';
 
@@ -116,7 +117,11 @@ async function onMessageReceived() {
                 characterFullPrompt: useFullAnchor ? anchor.sdPrompt : '',
                 intent,
                 model,
+                userText, // v0.11.19 LoRA matcher 也用这个文本做 trigger 测试
             });
+
+            // v0.11.19 LoRA toast + DMD2 提示
+            notifyLoraLoaded(built.lorasApplied, model);
 
             const { imageUrl } = await bridge.generate({
                 model,
@@ -132,6 +137,7 @@ async function onMessageReceived() {
                 denoise: 1.0,
                 // v0.11.16 本地组织：散文 pic tag 路径 → worldbook/character/inline/
                 pathContext: { worldbookName: contact?.bookName, characterName: contact?.name, category: 'inline' },
+                lorasApplied: built.lorasApplied, // v0.11.19 触发式 LoRA
             });
 
             // Replace tag with <img>
@@ -171,6 +177,20 @@ function getRecentUserContext(chat, n = 3) {
 
 function escapeAttr(s) {
     return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// v0.11.19 LoRA toast — 命中时秀"已加载 N 个 LoRA"+ 列表。
+// DMD2 路径下补一条 "切到 unholy_desire 获得满血效果" 提示（每 session 只秀一次防刷屏）。
+const _dmd2HintShown = new Set();
+function notifyLoraLoaded(lorasApplied, model) {
+    if (!Array.isArray(lorasApplied) || lorasApplied.length === 0) return;
+    const names = lorasApplied.map((l) => `${l.id} (w=${l.weight.model.toFixed(2)})`).join('、');
+    toastr.info(`已加载 ${lorasApplied.length} 个 LoRA：${names}`, '触发式 LoRA', { timeOut: 4500 });
+
+    if (isDMD2Model(model) && !_dmd2HintShown.has(model)) {
+        _dmd2HintShown.add(model);
+        toastr.info('当前模型走 DMD2 蒸馏 (CFG 1.6 / 8 步)，LoRA 表达力受限。切到 unholy_desire 获得满血效果。', '提示', { timeOut: 8000 });
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -249,7 +269,11 @@ window.smartImageGen = {
             characterFullPrompt: useFullAnchor ? anchor.sdPrompt : '',
             intent,
             model,
+            userText, // v0.11.19 LoRA matcher 也用这个文本做 trigger 测试
         });
+
+        // v0.11.19 LoRA toast + DMD2 提示
+        notifyLoraLoaded(built.lorasApplied, model);
 
         // On reroll: ignore locked seed so user gets a different image. Otherwise reuse anchor.seed for consistency.
         const useLockedSeed = anchor.locked && !hint.reroll;
@@ -281,6 +305,7 @@ window.smartImageGen = {
             seed: useLockedSeed ? anchor.seed : null,
             denoise: 1.0,
             pathContext: { worldbookName: _worldbook, characterName: _charName, category: _categoryFromSource },
+            lorasApplied: built.lorasApplied, // v0.11.19 触发式 LoRA
         });
         return imageUrl;
     },
