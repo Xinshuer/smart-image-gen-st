@@ -117,7 +117,9 @@ async function onMessageReceived() {
                 characterFullPrompt: useFullAnchor ? anchor.sdPrompt : '',
                 intent,
                 model,
-                userText, // v0.11.19 LoRA matcher 也用这个文本做 trigger 测试
+                userText, // v0.11.19 intent 分类 + 历史复合上下文
+                // v0.11.21 LoRA trigger 严格只看本回合，防止跨回合 dogeza 等 LoRA 误粘连
+                loraTriggerText: getLatestUserMessage(ctx.chat),
             });
 
             // v0.11.19 LoRA toast + DMD2 提示
@@ -173,6 +175,18 @@ function getRecentUserContext(chat, n = 3) {
         if (chat[i].is_user) collected.push(chat[i].mes || '');
     }
     return collected.reverse().join('\n');
+}
+
+// v0.11.21 LoRA trigger 专用 — 只取最新一条用户消息。
+// 修跨回合 LoRA 泄漏 bug：之前 LoRA 触发用 getRecentUserContext(3) → 上回合说过的"土下座"
+// 后续 1-2 回合都会让 dogeza LoRA 误触发。LoRA 触发必须严格当前回合，跟 NSFW 多消息复合分类是
+// 两套需求。intent 分类继续用 3-msg context（不变），LoRA 触发改用单消息。
+function getLatestUserMessage(chat) {
+    if (!Array.isArray(chat)) return '';
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (chat[i].is_user) return chat[i].mes || '';
+    }
+    return '';
 }
 
 function escapeAttr(s) {
@@ -269,7 +283,9 @@ window.smartImageGen = {
             characterFullPrompt: useFullAnchor ? anchor.sdPrompt : '',
             intent,
             model,
-            userText, // v0.11.19 LoRA matcher 也用这个文本做 trigger 测试
+            userText, // v0.11.19 intent 分类 + 历史复合上下文
+            // v0.11.21 LoRA trigger 严格只看本回合，防止跨回合 dogeza 等 LoRA 误粘连
+            loraTriggerText: getLatestUserMessage(ctx.chat),
         });
 
         // v0.11.19 LoRA toast + DMD2 提示
